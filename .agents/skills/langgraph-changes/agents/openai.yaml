@@ -1,0 +1,4 @@
+interface:
+  display_name: "LangGraph Changes"
+  short_description: "Safely evolve the decision workflow graph"
+  default_prompt: "Use $langgraph-changes to modify a workflow node while preserving contracts and traces."

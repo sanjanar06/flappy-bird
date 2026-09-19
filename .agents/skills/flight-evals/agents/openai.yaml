@@ -1,0 +1,4 @@
+interface:
+  display_name: "Flight Evals"
+  short_description: "Create fixtures and evaluate flight decisions"
+  default_prompt: "Use $flight-evals to add a fixture-based scenario and its deterministic checks."
