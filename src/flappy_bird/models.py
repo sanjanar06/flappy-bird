@@ -6,7 +6,8 @@ use them regardless of whether a request arrived from a form, natural language, 
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
+from decimal import Decimal
 from enum import StrEnum
 
 from pydantic import BaseModel, Field, field_validator, model_validator
@@ -35,6 +36,23 @@ class ProtectionStatus(StrEnum):
     UNKNOWN = "unknown"
 
 
+class ConnectionLabel(StrEnum):
+    """Evidence-backed connection characteristics shown to the traveler."""
+
+    PROTECTED_CONNECTION = "protected_connection"
+    SELF_TRANSFER = "self_transfer"
+    PROTECTION_UNKNOWN = "protection_unknown"
+    AIRPORT_CHANGE = "airport_change"
+
+
+class ChoiceRole(StrEnum):
+    """Advisory roles that an offer may win in the displayed choice set."""
+
+    LOWEST_APPARENT_PRICE = "lowest_apparent_price"
+    LOWEST_CONNECTION_RISK = "lowest_connection_risk"
+    SHORTEST_TOTAL_TRAVEL_TIME = "shortest_total_travel_time"
+
+
 class TripRequest(BaseModel):
     """The provider-neutral request for the initial P0 search.
 
@@ -50,6 +68,11 @@ class TripRequest(BaseModel):
     passengers: int = Field(default=1, ge=1, le=1)
     cabin: CabinClass = CabinClass.ECONOMY
     max_stops: int = Field(default=1, ge=0, le=1)
+    checked_bags: int | None = Field(
+        default=None,
+        ge=0,
+        description="Traveler-supplied checked-bag count; unknown when omitted.",
+    )
     preference_text: str | None = Field(
         default=None,
         description="Optional user wording such as 'avoid very short connections'.",
@@ -74,6 +97,54 @@ class TripRequest(BaseModel):
         if missing_sources:
             missing = ", ".join(sorted(missing_sources))
             raise ValueError(f"field_sources must identify the source of: {missing}")
+
+        if self.checked_bags is not None and "checked_bags" not in self.field_sources:
+            raise ValueError("field_sources must identify the source of: checked_bags")
+        return self
+
+
+class CheckedBaggageAllowance(BaseModel):
+    """Included checked-baggage facts normalized from provider evidence."""
+
+    pieces: int | None = Field(default=None, ge=0)
+    weight_per_piece_kg: Decimal | None = Field(default=None, gt=0)
+    total_weight_kg: Decimal | None = Field(default=None, gt=0)
+
+    @model_validator(mode="after")
+    def require_provider_fact(self) -> CheckedBaggageAllowance:
+        if all(
+            value is None
+            for value in (self.pieces, self.weight_per_piece_kg, self.total_weight_kg)
+        ):
+            raise ValueError("at least one baggage-allowance fact is required")
+        if self.pieces == 0 and self.weight_per_piece_kg is not None:
+            raise ValueError("weight_per_piece_kg requires at least one included piece")
+        return self
+
+
+class CheckedBaggagePricing(BaseModel):
+    """Exact provider pricing for a requested number of checked bags."""
+
+    requested_pieces: int = Field(ge=1)
+    fee_total: int = Field(ge=0, description="Minor currency units")
+    currency: str = Field(min_length=3, max_length=3)
+    fees_by_piece: list[int] | None = None
+
+    @field_validator("currency")
+    @classmethod
+    def normalize_currency(cls, currency: str) -> str:
+        return currency.strip().upper()
+
+    @model_validator(mode="after")
+    def validate_fee_breakdown(self) -> CheckedBaggagePricing:
+        if self.fees_by_piece is None:
+            return self
+        if len(self.fees_by_piece) != self.requested_pieces:
+            raise ValueError("fees_by_piece must contain one entry per requested piece")
+        if any(fee < 0 for fee in self.fees_by_piece):
+            raise ValueError("fees_by_piece cannot contain negative amounts")
+        if sum(self.fees_by_piece) != self.fee_total:
+            raise ValueError("fees_by_piece must sum to fee_total")
         return self
 
 
@@ -97,6 +168,8 @@ class FlightSegment(BaseModel):
 
     @model_validator(mode="after")
     def validate_time_order(self) -> FlightSegment:
+        if self.departure_at.utcoffset() is None or self.arrival_at.utcoffset() is None:
+            raise ValueError("segment timestamps must include UTC offsets")
         if self.arrival_at <= self.departure_at:
             raise ValueError("arrival_at must be after departure_at")
         return self
@@ -115,6 +188,8 @@ class FlightOffer(BaseModel):
     currency: str = Field(min_length=3, max_length=3)
     segments: list[FlightSegment] = Field(min_length=1, max_length=2)
     protection_status: ProtectionStatus = ProtectionStatus.UNKNOWN
+    baggage_allowance: CheckedBaggageAllowance | None = None
+    checked_baggage_pricing: CheckedBaggagePricing | None = None
     retrieved_at: datetime
 
     @field_validator("currency")
@@ -122,8 +197,78 @@ class FlightOffer(BaseModel):
     def normalize_currency(cls, currency: str) -> str:
         return currency.strip().upper()
 
+    @model_validator(mode="after")
+    def validate_itinerary_and_baggage_currency(self) -> FlightOffer:
+        for previous, following in zip(self.segments, self.segments[1:], strict=False):
+            if following.departure_at <= previous.arrival_at:
+                raise ValueError("each connecting segment must depart after the prior arrival")
+
+        if (
+            self.checked_baggage_pricing is not None
+            and self.checked_baggage_pricing.currency != self.currency
+        ):
+            raise ValueError("baggage pricing must use the offer currency in P0")
+        return self
+
     @property
     def stops(self) -> int:
         """Number of connections, derived instead of trusted from a provider field."""
 
         return len(self.segments) - 1
+
+    @property
+    def total_duration(self) -> timedelta:
+        """Elapsed journey time, including the connection."""
+
+        return self.segments[-1].arrival_at - self.segments[0].departure_at
+
+    @property
+    def layover_duration(self) -> timedelta | None:
+        """Elapsed connection time for the P0 zero-or-one-stop itinerary."""
+
+        if self.stops == 0:
+            return None
+        return self.segments[1].departure_at - self.segments[0].arrival_at
+
+    @property
+    def has_airport_change(self) -> bool:
+        """Whether consecutive segments use different connection airports."""
+
+        return self.stops == 1 and self.segments[0].destination != self.segments[1].origin
+
+    @property
+    def connection_labels(self) -> frozenset[ConnectionLabel]:
+        """Deterministic factual labels; these are advisory, not a safety verdict."""
+
+        if self.stops == 0:
+            return frozenset()
+
+        protection_label = {
+            ProtectionStatus.PROTECTED: ConnectionLabel.PROTECTED_CONNECTION,
+            ProtectionStatus.SELF_TRANSFER: ConnectionLabel.SELF_TRANSFER,
+            ProtectionStatus.UNKNOWN: ConnectionLabel.PROTECTION_UNKNOWN,
+        }[self.protection_status]
+        labels = {protection_label}
+        if self.has_airport_change:
+            labels.add(ConnectionLabel.AIRPORT_CHANGE)
+        return frozenset(labels)
+
+    def total_with_checked_bags(self, requested_pieces: int) -> int | None:
+        """Return an exact baggage-adjusted total, or UNKNOWN as ``None``."""
+
+        if requested_pieces < 0:
+            raise ValueError("requested_pieces cannot be negative")
+        if requested_pieces == 0:
+            return self.total_price
+        if (
+            self.baggage_allowance is not None
+            and self.baggage_allowance.pieces is not None
+            and self.baggage_allowance.pieces >= requested_pieces
+        ):
+            return self.total_price
+        if (
+            self.checked_baggage_pricing is not None
+            and self.checked_baggage_pricing.requested_pieces == requested_pieces
+        ):
+            return self.total_price + self.checked_baggage_pricing.fee_total
+        return None
