@@ -156,6 +156,7 @@ class FlightSegment(BaseModel):
     departure_at: datetime
     arrival_at: datetime
     marketing_carrier: str
+    operating_carrier: str | None = None
     flight_number: str
 
     @field_validator("origin", "destination")
@@ -199,6 +200,9 @@ class FlightOffer(BaseModel):
 
     @model_validator(mode="after")
     def validate_itinerary_and_baggage_currency(self) -> FlightOffer:
+        if self.retrieved_at.utcoffset() is None:
+            raise ValueError("retrieved_at must include a UTC offset")
+
         for previous, following in zip(self.segments, self.segments[1:], strict=False):
             if following.departure_at <= previous.arrival_at:
                 raise ValueError("each connecting segment must depart after the prior arrival")
@@ -272,3 +276,23 @@ class FlightOffer(BaseModel):
         ):
             return self.total_price + self.checked_baggage_pricing.fee_total
         return None
+
+
+class OfferAnalysis(BaseModel):
+    """Deterministic facts derived from one normalized offer."""
+
+    offer_id: str
+    connection_labels: frozenset[ConnectionLabel] = Field(default_factory=frozenset)
+    stops: int = Field(ge=0)
+    total_duration_minutes: int = Field(gt=0)
+    layover_minutes: int | None = Field(default=None, ge=0)
+    has_airport_change: bool
+    has_operating_carrier_change: bool
+    total_price_for_requested_bags: int | None = Field(default=None, ge=0)
+
+
+class ChoiceAssignment(BaseModel):
+    """Advisory roles assigned to an offer by deterministic comparison."""
+
+    offer_id: str
+    roles: frozenset[ChoiceRole] = Field(default_factory=frozenset)

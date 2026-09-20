@@ -1,0 +1,140 @@
+{
+  "provider": "ignav",
+  "retrieved_at": "2026-09-20T21:30:00Z",
+  "response": {
+    "origin": "ORD",
+    "destination": "COK",
+    "departure_date": "2026-11-10",
+    "itineraries": [
+      {
+        "price": {"amount": 1048, "currency": "USD", "status": "verified"},
+        "outbound": {
+          "carrier": "Etihad",
+          "duration_minutes": 1150,
+          "segments": [
+            {
+              "marketing_carrier_code": "EY",
+              "flight_number": "10",
+              "operating_carrier_name": "Etihad",
+              "departure_airport": "ORD",
+              "departure_time_local": "2026-11-10T13:10:00",
+              "departure_timezone": "America/Chicago",
+              "departure_time_utc": "2026-11-10T19:10:00Z",
+              "arrival_airport": "AUH",
+              "arrival_time_local": "2026-11-11T12:30:00",
+              "arrival_timezone": "Asia/Dubai",
+              "arrival_time_utc": "2026-11-11T08:30:00Z",
+              "duration_minutes": 800,
+              "aircraft": "Boeing 787"
+            },
+            {
+              "marketing_carrier_code": "EY",
+              "flight_number": "334",
+              "operating_carrier_name": "Etihad",
+              "departure_airport": "AUH",
+              "departure_time_local": "2026-11-11T14:25:00",
+              "departure_timezone": "Asia/Dubai",
+              "departure_time_utc": "2026-11-11T10:25:00Z",
+              "arrival_airport": "COK",
+              "arrival_time_local": "2026-11-11T19:50:00",
+              "arrival_timezone": "Asia/Kolkata",
+              "arrival_time_utc": "2026-11-11T14:20:00Z",
+              "duration_minutes": 235,
+              "aircraft": "Airbus A321"
+            }
+          ]
+        },
+        "cabin_class": "economy",
+        "bags": {"checked": 2},
+        "requires_self_transfer": false,
+        "ignav_id": "7da0ae39da8a000000a3c1113538721f"
+      },
+      {
+        "price": {"amount": 1048, "currency": "USD", "status": "verified"},
+        "outbound": {
+          "carrier": "Etihad",
+          "duration_minutes": 1560,
+          "segments": [
+            {
+              "marketing_carrier_code": "EY",
+              "flight_number": "10",
+              "operating_carrier_name": "Etihad",
+              "departure_airport": "ORD",
+              "departure_time_local": "2026-11-10T13:10:00",
+              "departure_timezone": "America/Chicago",
+              "departure_time_utc": "2026-11-10T19:10:00Z",
+              "arrival_airport": "AUH",
+              "arrival_time_local": "2026-11-11T12:30:00",
+              "arrival_timezone": "Asia/Dubai",
+              "arrival_time_utc": "2026-11-11T08:30:00Z",
+              "duration_minutes": 800,
+              "aircraft": "Boeing 787"
+            },
+            {
+              "marketing_carrier_code": "QP",
+              "flight_number": "589",
+              "operating_carrier_name": "Akasa Air",
+              "departure_airport": "AUH",
+              "departure_time_local": "2026-11-11T20:55:00",
+              "departure_timezone": "Asia/Dubai",
+              "departure_time_utc": "2026-11-11T16:55:00Z",
+              "arrival_airport": "COK",
+              "arrival_time_local": "2026-11-12T02:40:00",
+              "arrival_timezone": "Asia/Kolkata",
+              "arrival_time_utc": "2026-11-11T21:10:00Z",
+              "duration_minutes": 255,
+              "aircraft": "Boeing 737MAX 8 Passenger"
+            }
+          ]
+        },
+        "cabin_class": "economy",
+        "bags": {"checked": 2},
+        "requires_self_transfer": true,
+        "ignav_id": "f42de81273a8000000b30e443a900185"
+      },
+      {
+        "price": {"amount": 1487, "currency": "USD", "status": "verified"},
+        "outbound": {
+          "carrier": "Etihad",
+          "duration_minutes": 1300,
+          "segments": [
+            {
+              "marketing_carrier_code": "EY",
+              "flight_number": "10",
+              "operating_carrier_name": "Etihad",
+              "departure_airport": "ORD",
+              "departure_time_local": "2026-11-10T13:10:00",
+              "departure_timezone": "America/Chicago",
+              "departure_time_utc": "2026-11-10T19:10:00Z",
+              "arrival_airport": "AUH",
+              "arrival_time_local": "2026-11-11T12:30:00",
+              "arrival_timezone": "Asia/Dubai",
+              "arrival_time_utc": "2026-11-11T08:30:00Z",
+              "duration_minutes": 800,
+              "aircraft": "Boeing 787"
+            },
+            {
+              "marketing_carrier_code": "3L",
+              "flight_number": "125",
+              "operating_carrier_name": "Air Arabia",
+              "departure_airport": "AUH",
+              "departure_time_local": "2026-11-11T16:55:00",
+              "departure_timezone": "Asia/Dubai",
+              "departure_time_utc": "2026-11-11T12:55:00Z",
+              "arrival_airport": "COK",
+              "arrival_time_local": "2026-11-11T22:20:00",
+              "arrival_timezone": "Asia/Kolkata",
+              "arrival_time_utc": "2026-11-11T16:50:00Z",
+              "duration_minutes": 235,
+              "aircraft": "Airbus A320"
+            }
+          ]
+        },
+        "cabin_class": "economy",
+        "bags": {"checked": 2},
+        "requires_self_transfer": true,
+        "ignav_id": "390c7416cd32000000812493fbba78b6"
+      }
+    ]
+  }
+}
