@@ -9,7 +9,11 @@ dependencies = [
     "httpx>=0.28,<1.0",
     "langgraph>=1.0,<2.0",
     "pydantic>=2.10,<3.0",
+    "python-dotenv>=1.0,<2.0",
 ]
+
+[project.scripts]
+flappy-bird = "flappy_bird.cli:main"
 
 [dependency-groups]
 dev = [

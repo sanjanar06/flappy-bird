@@ -18,6 +18,7 @@ class InputSource(StrEnum):
 
     FORM = "form"
     NATURAL_LANGUAGE = "natural_language"
+    COMMAND_LINE = "command_line"
     DEFAULT = "default"
     PRIOR_INTERACTION = "prior_interaction"
 
