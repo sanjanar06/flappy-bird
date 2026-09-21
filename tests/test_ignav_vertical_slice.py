@@ -10,12 +10,12 @@ from flappy_bird.models import (
     ProtectionStatus,
     TripRequest,
 )
-from flappy_bird.providers.ignav import IgnavFixture, normalize_ignav_response
+from flappy_bird.providers.ignav import IgnavObservation, normalize_ignav_response
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "ignav_ord_cok_2026-11-10.json"
 
 
-def _scenario() -> tuple[TripRequest, IgnavFixture]:
+def _scenario() -> tuple[TripRequest, IgnavObservation]:
     request = TripRequest(
         origin="ORD",
         destination="COK",
@@ -28,7 +28,7 @@ def _scenario() -> tuple[TripRequest, IgnavFixture]:
             "checked_bags": InputSource.FORM,
         },
     )
-    fixture = IgnavFixture.model_validate(json.loads(FIXTURE_PATH.read_text()))
+    fixture = IgnavObservation.model_validate(json.loads(FIXTURE_PATH.read_text()))
     return request, fixture
 
 

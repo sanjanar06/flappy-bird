@@ -15,7 +15,11 @@ from flappy_bird.models import (
     TripRequest,
 )
 from flappy_bird.providers.fixture import IgnavObservationProvider
-from flappy_bird.providers.ignav import IgnavFixture, normalize_ignav_response
+from flappy_bird.providers.ignav import (
+    IgnavObservation,
+    IgnavProviderError,
+    normalize_ignav_response,
+)
 
 NodeName = Literal[
     "retrieve_offers",
@@ -32,11 +36,20 @@ class WorkflowTraceEvent(BaseModel):
     writes: tuple[str, ...]
 
 
+class ProviderFailure(BaseModel):
+    """Sanitized provider failure retained in graph state."""
+
+    provider: Literal["ignav"]
+    message: str
+    status_code: int | None = None
+
+
 class FlightDecisionState(BaseModel):
     """Typed state shared by every node in the P0 flight-decision graph."""
 
     request: TripRequest
-    provider_observation: IgnavFixture | None = None
+    provider_observation: IgnavObservation | None = None
+    provider_failures: list[ProviderFailure] = Field(default_factory=list)
     normalized_offers: list[FlightOffer] = Field(default_factory=list)
     offer_analyses: dict[str, OfferAnalysis] = Field(default_factory=dict)
     choice_assignments: list[ChoiceAssignment] = Field(default_factory=list)
@@ -47,10 +60,32 @@ def build_flight_decision_graph(provider: IgnavObservationProvider):
     """Compile the deterministic P0 graph around an injected provider boundary."""
 
     def retrieve_offers(state: FlightDecisionState) -> dict[str, object]:
+        try:
+            observation = provider.retrieve(state.request)
+        except IgnavProviderError as error:
+            return {
+                "provider_failures": [
+                    ProviderFailure(
+                        provider="ignav",
+                        message=str(error),
+                        status_code=error.status_code,
+                    )
+                ],
+                "trace": _append_trace(state, "retrieve_offers", "provider_failures"),
+            }
         return {
-            "provider_observation": provider.retrieve(state.request),
+            "provider_observation": observation,
             "trace": _append_trace(state, "retrieve_offers", "provider_observation"),
         }
+
+    def route_after_retrieval(
+        state: FlightDecisionState,
+    ) -> Literal["normalize_offers", "stop"]:
+        if state.provider_observation is not None:
+            return "normalize_offers"
+        if state.provider_failures:
+            return "stop"
+        raise ValueError("retrieval produced neither an observation nor a provider failure")
 
     def normalize_offers(state: FlightDecisionState) -> dict[str, object]:
         observation = _require_observation(state)
@@ -100,14 +135,18 @@ def build_flight_decision_graph(provider: IgnavObservationProvider):
     graph.add_node("analyze_offers", analyze_normalized_offers)
     graph.add_node("construct_choice_set", construct_choice_set)
     graph.add_edge(START, "retrieve_offers")
-    graph.add_edge("retrieve_offers", "normalize_offers")
+    graph.add_conditional_edges(
+        "retrieve_offers",
+        route_after_retrieval,
+        {"normalize_offers": "normalize_offers", "stop": END},
+    )
     graph.add_edge("normalize_offers", "analyze_offers")
     graph.add_edge("analyze_offers", "construct_choice_set")
     graph.add_edge("construct_choice_set", END)
     return graph.compile()
 
 
-def _require_observation(state: FlightDecisionState) -> IgnavFixture:
+def _require_observation(state: FlightDecisionState) -> IgnavObservation:
     if state.provider_observation is None:
         raise ValueError("provider observation is missing")
     return state.provider_observation

@@ -4,14 +4,14 @@ from pathlib import Path
 
 from flappy_bird.models import ChoiceRole, InputSource, TripRequest
 from flappy_bird.providers.fixture import FixtureIgnavProvider
-from flappy_bird.providers.ignav import IgnavFixture
+from flappy_bird.providers.ignav import IgnavObservation
 from flappy_bird.workflow import FlightDecisionState, build_flight_decision_graph
 
 FIXTURE_PATH = Path(__file__).parent / "fixtures" / "ignav_ord_cok_2026-11-10.json"
 
 
 def test_fixture_graph_reaches_every_node_and_returns_three_choices() -> None:
-    fixture = IgnavFixture.model_validate(json.loads(FIXTURE_PATH.read_text()))
+    fixture = IgnavObservation.model_validate(json.loads(FIXTURE_PATH.read_text()))
     request = TripRequest(
         origin="ORD",
         destination="COK",

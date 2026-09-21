@@ -2,10 +2,14 @@
 
 from __future__ import annotations
 
-from datetime import date, datetime, timedelta
+import os
+from collections.abc import Callable, Mapping
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
+from typing import Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
+import httpx
 from pydantic import BaseModel, Field
 
 from flappy_bird.models import (
@@ -15,6 +19,8 @@ from flappy_bird.models import (
     ProtectionStatus,
     TripRequest,
 )
+
+IGNAV_ONE_WAY_URL = "https://ignav.com/api/fares/one-way"
 
 
 class IgnavPrice(BaseModel):
@@ -66,12 +72,109 @@ class IgnavOneWayResponse(BaseModel):
     itineraries: list[IgnavItinerary]
 
 
-class IgnavFixture(BaseModel):
-    """Sanitized provider observation plus retrieval provenance."""
+class IgnavObservation(BaseModel):
+    """One validated provider response plus retrieval provenance."""
 
-    provider: str
+    provider: Literal["ignav"]
     retrieved_at: datetime
     response: IgnavOneWayResponse
+
+
+class IgnavOneWayRequest(BaseModel):
+    """Supported subset of Ignav's one-way fare request."""
+
+    origin: str
+    destination: str
+    departure_date: date
+    adults: int = Field(ge=1, le=9)
+    cabin_class: str
+    max_stops: int = Field(ge=0, le=2)
+    min_checked_bags: int | None = Field(default=None, ge=0)
+    allow_self_transfer: Literal[True] = True
+    market: Literal["US"] = "US"
+
+
+class IgnavProviderError(RuntimeError):
+    """Safe provider failure with machine-readable status when available."""
+
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+
+
+class LiveIgnavProvider:
+    """Synchronous HTTP adapter for Ignav's one-way fare endpoint."""
+
+    def __init__(
+        self,
+        *,
+        api_key: str,
+        client: httpx.Client,
+        clock: Callable[[], datetime] | None = None,
+        timeout_seconds: float = 20.0,
+    ) -> None:
+        if not api_key.strip():
+            raise ValueError("Ignav API key cannot be empty")
+        if timeout_seconds <= 0:
+            raise ValueError("Ignav timeout must be positive")
+        self._api_key = api_key
+        self._client = client
+        self._clock = clock or (lambda: datetime.now(UTC))
+        self._timeout_seconds = timeout_seconds
+
+    @classmethod
+    def from_environment(
+        cls,
+        *,
+        client: httpx.Client,
+        environ: Mapping[str, str] | None = None,
+        clock: Callable[[], datetime] | None = None,
+    ) -> LiveIgnavProvider:
+        environment = os.environ if environ is None else environ
+        api_key = environment.get("IGNAV_API_KEY")
+        if api_key is None:
+            raise ValueError("IGNAV_API_KEY is not configured")
+        return cls(api_key=api_key, client=client, clock=clock)
+
+    def retrieve(self, request: TripRequest) -> IgnavObservation:
+        provider_request = IgnavOneWayRequest(
+            origin=request.origin,
+            destination=request.destination,
+            departure_date=request.departure_date,
+            adults=request.passengers,
+            cabin_class=request.cabin.value,
+            max_stops=request.max_stops,
+            min_checked_bags=request.checked_bags,
+            allow_self_transfer=True,
+            market="US",
+        )
+        try:
+            response = self._client.post(
+                IGNAV_ONE_WAY_URL,
+                headers={"X-Api-Key": self._api_key},
+                json=provider_request.model_dump(mode="json", exclude_none=True),
+                timeout=self._timeout_seconds,
+            )
+            response.raise_for_status()
+            parsed = IgnavOneWayResponse.model_validate(response.json())
+        except httpx.HTTPStatusError as error:
+            raise IgnavProviderError(
+                f"Ignav request failed with HTTP {error.response.status_code}",
+                status_code=error.response.status_code,
+            ) from error
+        except httpx.RequestError as error:
+            raise IgnavProviderError("Ignav request failed before receiving a response") from error
+        except (ValueError, TypeError) as error:
+            raise IgnavProviderError("Ignav returned an invalid response") from error
+
+        retrieved_at = self._clock()
+        if retrieved_at.utcoffset() is None:
+            raise ValueError("Ignav retrieval clock must return a timezone-aware timestamp")
+        return IgnavObservation(
+            provider="ignav",
+            retrieved_at=retrieved_at,
+            response=parsed,
+        )
 
 
 def normalize_ignav_response(
