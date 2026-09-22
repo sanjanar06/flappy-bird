@@ -3,6 +3,7 @@ from io import StringIO
 from pathlib import Path
 
 from flappy_bird.cli import main
+from flappy_bird.explanations import ChoiceEvidence, ChoiceExplanation
 from flappy_bird.models import InputSource, TripRequest
 from flappy_bird.providers.ignav import (
     IgnavObservation,
@@ -38,6 +39,18 @@ class FailingProvider:
         raise IgnavProviderError("Ignav request failed with HTTP 401", status_code=401)
 
 
+class FixtureExplainer:
+    def explain(self, evidence: list[ChoiceEvidence]) -> list[ChoiceExplanation]:
+        return [
+            ChoiceExplanation(
+                offer_id=item.offer_id,
+                summary="A grounded explanation.",
+                tradeoff="A grounded tradeoff.",
+            )
+            for item in evidence
+        ]
+
+
 def test_cli_runs_fixture_graph_and_renders_normalized_choices() -> None:
     observation = IgnavObservation.model_validate(json.loads(FIXTURE_PATH.read_text()))
     provider = CapturingProvider(observation)
@@ -71,3 +84,22 @@ def test_cli_returns_safe_error_for_provider_failure() -> None:
     assert exit_code == 2
     assert stdout.getvalue() == ""
     assert stderr.getvalue() == "Flight search failed: Ignav request failed with HTTP 401\n"
+
+
+def test_cli_renders_optional_validated_explanations() -> None:
+    observation = IgnavObservation.model_validate(json.loads(FIXTURE_PATH.read_text()))
+    stdout = StringIO()
+    stderr = StringIO()
+
+    exit_code = main(
+        SEARCH_ARGS,
+        provider=CapturingProvider(observation),
+        explainer=FixtureExplainer(),
+        stdout=stdout,
+        stderr=stderr,
+    )
+
+    assert exit_code == 0
+    assert stderr.getvalue() == ""
+    assert "Explanation: A grounded explanation." in stdout.getvalue()
+    assert "Tradeoff: A grounded tradeoff." in stdout.getvalue()

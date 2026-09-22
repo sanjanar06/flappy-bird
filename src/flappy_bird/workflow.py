@@ -8,6 +8,12 @@ from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
 from flappy_bird.decision import analyze_offers, assign_choice_roles
+from flappy_bird.explanations import (
+    ChoiceExplainer,
+    ChoiceExplanation,
+    ExplanationError,
+    prepare_choice_evidence,
+)
 from flappy_bird.models import (
     ChoiceAssignment,
     FlightOffer,
@@ -26,6 +32,7 @@ NodeName = Literal[
     "normalize_offers",
     "analyze_offers",
     "construct_choice_set",
+    "explain_choices",
 ]
 
 
@@ -53,10 +60,15 @@ class FlightDecisionState(BaseModel):
     normalized_offers: list[FlightOffer] = Field(default_factory=list)
     offer_analyses: dict[str, OfferAnalysis] = Field(default_factory=dict)
     choice_assignments: list[ChoiceAssignment] = Field(default_factory=list)
+    choice_explanations: list[ChoiceExplanation] = Field(default_factory=list)
+    explanation_failure: str | None = None
     trace: list[WorkflowTraceEvent] = Field(default_factory=list)
 
 
-def build_flight_decision_graph(provider: IgnavObservationProvider):
+def build_flight_decision_graph(
+    provider: IgnavObservationProvider,
+    explainer: ChoiceExplainer | None = None,
+):
     """Compile the deterministic P0 graph around an injected provider boundary."""
 
     def retrieve_offers(state: FlightDecisionState) -> dict[str, object]:
@@ -129,11 +141,41 @@ def build_flight_decision_graph(provider: IgnavObservationProvider):
             ),
         }
 
+    def explain_choices(state: FlightDecisionState) -> dict[str, object]:
+        if explainer is None:
+            raise ValueError("explanation node requires an explainer")
+        evidence = prepare_choice_evidence(
+            state.normalized_offers,
+            state.offer_analyses,
+            state.choice_assignments,
+        )
+        try:
+            explanations = explainer.explain(evidence)
+        except ExplanationError as error:
+            return {
+                "explanation_failure": str(error),
+                "trace": _append_trace(
+                    state,
+                    "explain_choices",
+                    "explanation_failure",
+                ),
+            }
+        return {
+            "choice_explanations": explanations,
+            "trace": _append_trace(
+                state,
+                "explain_choices",
+                "choice_explanations",
+            ),
+        }
+
     graph = StateGraph(FlightDecisionState)
     graph.add_node("retrieve_offers", retrieve_offers)
     graph.add_node("normalize_offers", normalize_offers)
     graph.add_node("analyze_offers", analyze_normalized_offers)
     graph.add_node("construct_choice_set", construct_choice_set)
+    if explainer is not None:
+        graph.add_node("explain_choices", explain_choices)
     graph.add_edge(START, "retrieve_offers")
     graph.add_conditional_edges(
         "retrieve_offers",
@@ -142,7 +184,11 @@ def build_flight_decision_graph(provider: IgnavObservationProvider):
     )
     graph.add_edge("normalize_offers", "analyze_offers")
     graph.add_edge("analyze_offers", "construct_choice_set")
-    graph.add_edge("construct_choice_set", END)
+    if explainer is None:
+        graph.add_edge("construct_choice_set", END)
+    else:
+        graph.add_edge("construct_choice_set", "explain_choices")
+        graph.add_edge("explain_choices", END)
     return graph.compile()
 
 

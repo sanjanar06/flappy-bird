@@ -12,6 +12,7 @@ from typing import TextIO
 import httpx
 from dotenv import load_dotenv
 
+from flappy_bird.explanations import ChoiceExplainer
 from flappy_bird.models import (
     ChoiceRole,
     ConnectionLabel,
@@ -19,6 +20,7 @@ from flappy_bird.models import (
     TripRequest,
 )
 from flappy_bird.providers.fixture import IgnavObservationProvider
+from flappy_bird.providers.groq import GroqChoiceExplainer
 from flappy_bird.providers.ignav import LiveIgnavProvider
 from flappy_bird.workflow import FlightDecisionState, build_flight_decision_graph
 
@@ -40,6 +42,7 @@ def main(
     argv: Sequence[str] | None = None,
     *,
     provider: IgnavObservationProvider | None = None,
+    explainer: ChoiceExplainer | None = None,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> int:
@@ -51,13 +54,23 @@ def main(
     request = _build_request(args)
 
     if provider is not None:
-        return _run_search(request, provider, output, error_output)
+        return _run_search(request, provider, explainer, output, error_output)
 
     load_dotenv()
     try:
         with httpx.Client() as client:
             live_provider = LiveIgnavProvider.from_environment(client=client)
-            return _run_search(request, live_provider, output, error_output)
+            try:
+                live_explainer = GroqChoiceExplainer.from_environment(client=client)
+            except ValueError:
+                live_explainer = None
+            return _run_search(
+                request,
+                live_provider,
+                live_explainer,
+                output,
+                error_output,
+            )
     except ValueError as error:
         print(f"Configuration error: {error}", file=error_output)
         return 2
@@ -117,10 +130,11 @@ def _build_request(args: argparse.Namespace) -> TripRequest:
 def _run_search(
     request: TripRequest,
     provider: IgnavObservationProvider,
+    explainer: ChoiceExplainer | None,
     stdout: TextIO,
     stderr: TextIO,
 ) -> int:
-    graph = build_flight_decision_graph(provider)
+    graph = build_flight_decision_graph(provider, explainer)
     try:
         state = FlightDecisionState.model_validate(graph.invoke({"request": request}))
     except ValueError as error:
@@ -133,11 +147,20 @@ def _run_search(
         return 2
 
     print(_render_choices(state, request.checked_bags), file=stdout)
+    if state.explanation_failure is not None:
+        print(
+            f"AI explanations unavailable: {state.explanation_failure}",
+            file=stderr,
+        )
     return 0
 
 
 def _render_choices(state: FlightDecisionState, checked_bags: int | None) -> str:
     offers = {offer.provider_offer_id: offer for offer in state.normalized_offers}
+    explanations = {
+        explanation.offer_id: explanation
+        for explanation in state.choice_explanations
+    }
     lines = [f"{len(state.choice_assignments)} flight choices"]
     for index, assignment in enumerate(state.choice_assignments, start=1):
         offer = offers[assignment.offer_id]
@@ -148,8 +171,7 @@ def _render_choices(state: FlightDecisionState, checked_bags: int | None) -> str
             for connection_label, label in CONNECTION_LABELS.items()
             if connection_label in analysis.connection_labels
         ]
-        lines.extend(
-            [
+        choice_lines = [
                 "",
                 f"Choice {index}",
                 f"  Roles: {', '.join(roles) if roles else 'None'}",
@@ -160,8 +182,16 @@ def _render_choices(state: FlightDecisionState, checked_bags: int | None) -> str
                 f"  Stops: {analysis.stops}",
                 f"  Connection labels: {', '.join(labels) if labels else 'None'}",
                 f"  Provider: {offer.provider}",
-            ]
-        )
+        ]
+        explanation = explanations.get(assignment.offer_id)
+        if explanation is not None:
+            choice_lines.extend(
+                [
+                    f"  Explanation: {explanation.summary}",
+                    f"  Tradeoff: {explanation.tradeoff}",
+                ]
+            )
+        lines.extend(choice_lines)
     return "\n".join(lines)
 
 
