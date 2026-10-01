@@ -137,6 +137,7 @@ def test_mocked_live_provider_drives_the_complete_decision_graph() -> None:
     assert [event.node for event in result.trace] == [
         "retrieve_offers",
         "normalize_offers",
+        "reconcile_offers",
         "analyze_offers",
         "construct_choice_set",
     ]

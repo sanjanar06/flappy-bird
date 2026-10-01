@@ -68,6 +68,7 @@ def test_explanation_node_receives_prepared_evidence_after_choice_construction()
     assert [event.node for event in state.trace] == [
         "retrieve_offers",
         "normalize_offers",
+        "reconcile_offers",
         "analyze_offers",
         "construct_choice_set",
         "explain_choices",

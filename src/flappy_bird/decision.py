@@ -90,6 +90,30 @@ def assign_choice_roles(
     return assignments
 
 
+def select_choice_set(
+    assignments: list[ChoiceAssignment], limit: int = 3
+) -> list[ChoiceAssignment]:
+    """Keep role winners first, then fill a small set in stable provider order."""
+
+    if limit < 1:
+        raise ValueError("choice-set limit must be positive")
+    by_id = {assignment.offer_id: assignment for assignment in assignments}
+    selected_ids: list[str] = []
+    for role in ChoiceRole:
+        winner = next(
+            (item.offer_id for item in assignments if role in item.roles),
+            None,
+        )
+        if winner is not None and winner not in selected_ids:
+            selected_ids.append(winner)
+    for assignment in assignments:
+        if assignment.offer_id not in selected_ids:
+            selected_ids.append(assignment.offer_id)
+        if len(selected_ids) == limit:
+            break
+    return [by_id[offer_id] for offer_id in selected_ids[:limit]]
+
+
 def _connection_risk_key(analysis: OfferAnalysis) -> tuple[int, bool, bool]:
     if analysis.stops == 0:
         protection_rank = 0

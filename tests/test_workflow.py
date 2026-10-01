@@ -49,12 +49,14 @@ def test_fixture_graph_reaches_every_node_and_returns_three_choices() -> None:
     assert [event.node for event in result.trace] == [
         "retrieve_offers",
         "normalize_offers",
+        "reconcile_offers",
         "analyze_offers",
         "construct_choice_set",
     ]
     assert [event.writes for event in result.trace] == [
         ("provider_observation",),
         ("normalized_offers",),
+        ("normalized_offers", "reconciled_itineraries"),
         ("offer_analyses",),
         ("choice_assignments",),
     ]

@@ -7,7 +7,7 @@ from typing import Literal
 from langgraph.graph import END, START, StateGraph
 from pydantic import BaseModel, Field
 
-from flappy_bird.decision import analyze_offers, assign_choice_roles
+from flappy_bird.decision import analyze_offers, assign_choice_roles, select_choice_set
 from flappy_bird.explanations import (
     ChoiceExplainer,
     ChoiceExplanation,
@@ -20,16 +20,20 @@ from flappy_bird.models import (
     OfferAnalysis,
     TripRequest,
 )
+from flappy_bird.providers.base import ProviderSearchBatch
 from flappy_bird.providers.fixture import IgnavObservationProvider
 from flappy_bird.providers.ignav import (
     IgnavObservation,
     IgnavProviderError,
     normalize_ignav_response,
 )
+from flappy_bird.providers.serpapi import SerpApiProviderError
+from flappy_bird.reconciliation import ReconciledItinerary, reconcile_offers
 
 NodeName = Literal[
     "retrieve_offers",
     "normalize_offers",
+    "reconcile_offers",
     "analyze_offers",
     "construct_choice_set",
     "explain_choices",
@@ -46,7 +50,7 @@ class WorkflowTraceEvent(BaseModel):
 class ProviderFailure(BaseModel):
     """Sanitized provider failure retained in graph state."""
 
-    provider: Literal["ignav"]
+    provider: str
     message: str
     status_code: int | None = None
 
@@ -57,7 +61,9 @@ class FlightDecisionState(BaseModel):
     request: TripRequest
     provider_observation: IgnavObservation | None = None
     provider_failures: list[ProviderFailure] = Field(default_factory=list)
+    provider_results_received: bool = False
     normalized_offers: list[FlightOffer] = Field(default_factory=list)
+    reconciled_itineraries: list[ReconciledItinerary] = Field(default_factory=list)
     offer_analyses: dict[str, OfferAnalysis] = Field(default_factory=dict)
     choice_assignments: list[ChoiceAssignment] = Field(default_factory=list)
     choice_explanations: list[ChoiceExplanation] = Field(default_factory=list)
@@ -74,16 +80,42 @@ def build_flight_decision_graph(
     def retrieve_offers(state: FlightDecisionState) -> dict[str, object]:
         try:
             observation = provider.retrieve(state.request)
-        except IgnavProviderError as error:
+        except (IgnavProviderError, SerpApiProviderError) as error:
             return {
                 "provider_failures": [
                     ProviderFailure(
-                        provider="ignav",
+                        provider=getattr(provider, "name", "ignav"),
                         message=str(error),
                         status_code=error.status_code,
                     )
                 ],
                 "trace": _append_trace(state, "retrieve_offers", "provider_failures"),
+            }
+        if isinstance(observation, ProviderSearchBatch):
+            failures = [
+                ProviderFailure(
+                    provider=failure.provider,
+                    message=failure.message,
+                    status_code=failure.status_code,
+                )
+                for failure in observation.failures
+            ]
+            return {
+                "normalized_offers": observation.offers,
+                "provider_failures": failures,
+                "provider_results_received": True,
+                "trace": _append_trace(
+                    state,
+                    "retrieve_offers",
+                    "normalized_offers",
+                    "provider_failures",
+                ),
+            }
+        if isinstance(observation, list):
+            return {
+                "normalized_offers": observation,
+                "provider_results_received": True,
+                "trace": _append_trace(state, "retrieve_offers", "normalized_offers"),
             }
         return {
             "provider_observation": observation,
@@ -92,11 +124,15 @@ def build_flight_decision_graph(
 
     def route_after_retrieval(
         state: FlightDecisionState,
-    ) -> Literal["normalize_offers", "stop"]:
+    ) -> Literal["normalize_offers", "reconcile_offers", "stop"]:
         if state.provider_observation is not None:
             return "normalize_offers"
+        if state.normalized_offers:
+            return "reconcile_offers"
         if state.provider_failures:
             return "stop"
+        if state.provider_results_received:
+            return "reconcile_offers"
         raise ValueError("retrieval produced neither an observation nor a provider failure")
 
     def normalize_offers(state: FlightDecisionState) -> dict[str, object]:
@@ -109,6 +145,20 @@ def build_flight_decision_graph(
         return {
             "normalized_offers": offers,
             "trace": _append_trace(state, "normalize_offers", "normalized_offers"),
+        }
+
+    def reconcile_normalized_offers(state: FlightDecisionState) -> dict[str, object]:
+        itineraries = reconcile_offers(state.normalized_offers)
+        representatives = [item.representative for item in itineraries]
+        return {
+            "normalized_offers": representatives,
+            "reconciled_itineraries": itineraries,
+            "trace": _append_trace(
+                state,
+                "reconcile_offers",
+                "normalized_offers",
+                "reconciled_itineraries",
+            ),
         }
 
     def analyze_normalized_offers(state: FlightDecisionState) -> dict[str, object]:
@@ -128,10 +178,7 @@ def build_flight_decision_graph(
             state.normalized_offers,
             state.offer_analyses,
         )
-        if len(assignments) != 3:
-            raise ValueError(
-                "P0 evaluation scenario requires exactly three distinct flight choices"
-            )
+        assignments = select_choice_set(assignments)
         return {
             "choice_assignments": assignments,
             "trace": _append_trace(
@@ -172,6 +219,7 @@ def build_flight_decision_graph(
     graph = StateGraph(FlightDecisionState)
     graph.add_node("retrieve_offers", retrieve_offers)
     graph.add_node("normalize_offers", normalize_offers)
+    graph.add_node("reconcile_offers", reconcile_normalized_offers)
     graph.add_node("analyze_offers", analyze_normalized_offers)
     graph.add_node("construct_choice_set", construct_choice_set)
     if explainer is not None:
@@ -180,9 +228,14 @@ def build_flight_decision_graph(
     graph.add_conditional_edges(
         "retrieve_offers",
         route_after_retrieval,
-        {"normalize_offers": "normalize_offers", "stop": END},
+        {
+            "normalize_offers": "normalize_offers",
+            "reconcile_offers": "reconcile_offers",
+            "stop": END,
+        },
     )
-    graph.add_edge("normalize_offers", "analyze_offers")
+    graph.add_edge("normalize_offers", "reconcile_offers")
+    graph.add_edge("reconcile_offers", "analyze_offers")
     graph.add_edge("analyze_offers", "construct_choice_set")
     if explainer is None:
         graph.add_edge("construct_choice_set", END)
