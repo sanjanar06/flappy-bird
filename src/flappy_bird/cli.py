@@ -19,8 +19,14 @@ from flappy_bird.models import (
     InputSource,
     TripRequest,
 )
+from flappy_bird.natural_language import (
+    IntakeError,
+    TripInterpreter,
+    build_request_from_message,
+)
 from flappy_bird.providers.fixture import IgnavObservationProvider
 from flappy_bird.providers.groq import GroqChoiceExplainer
+from flappy_bird.providers.groq_intake import GroqTripInterpreter
 from flappy_bird.providers.ignav import LiveIgnavProvider
 from flappy_bird.workflow import FlightDecisionState, build_flight_decision_graph
 
@@ -43,6 +49,7 @@ def main(
     *,
     provider: IgnavObservationProvider | None = None,
     explainer: ChoiceExplainer | None = None,
+    interpreter: TripInterpreter | None = None,
     stdout: TextIO | None = None,
     stderr: TextIO | None = None,
 ) -> int:
@@ -51,19 +58,39 @@ def main(
     output = stdout or sys.stdout
     error_output = stderr or sys.stderr
     args = _build_parser().parse_args(argv)
-    request = _build_request(args)
-
-    if provider is not None:
-        return _run_search(request, provider, explainer, output, error_output)
+    if args.command == "search":
+        request = _build_request(args)
+        if provider is not None:
+            return _run_search(request, provider, explainer, output, error_output)
+    elif interpreter is not None:
+        try:
+            request = build_request_from_message(args.message, interpreter.extract(args.message))
+        except IntakeError as error:
+            print(f"Trip clarification: {error}", file=error_output)
+            return 2
+        if provider is not None:
+            return _run_search(request, provider, explainer, output, error_output)
 
     load_dotenv()
     try:
         with httpx.Client() as client:
-            live_provider = LiveIgnavProvider.from_environment(client=client)
-            try:
-                live_explainer = GroqChoiceExplainer.from_environment(client=client)
-            except ValueError:
-                live_explainer = None
+            if args.command == "ask":
+                live_interpreter = GroqTripInterpreter.from_environment(client=client)
+                try:
+                    request = build_request_from_message(
+                        args.message, live_interpreter.extract(args.message)
+                    )
+                except IntakeError as error:
+                    print(f"Trip clarification: {error}", file=error_output)
+                    return 2
+            live_provider = provider or LiveIgnavProvider.from_environment(client=client)
+            if explainer is not None:
+                live_explainer = explainer
+            else:
+                try:
+                    live_explainer = GroqChoiceExplainer.from_environment(client=client)
+                except ValueError:
+                    live_explainer = None
             return _run_search(
                 request,
                 live_provider,
@@ -93,6 +120,8 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     search.add_argument("--checked-bags", required=True, type=int, choices=range(0, 10))
     search.add_argument("--max-stops", type=int, choices=(0, 1), default=None)
+    ask = subparsers.add_parser("ask", help="Search from a natural-language trip request")
+    ask.add_argument("message", help="Include airport codes, date with year, and checked bags")
     return parser
 
 
@@ -141,12 +170,17 @@ def _run_search(
         print(f"Decision workflow failed: {error}", file=stderr)
         return 2
 
-    if state.provider_failures:
+    if state.provider_failures and not state.normalized_offers:
         failure = state.provider_failures[0]
         print(f"Flight search failed: {failure.message}", file=stderr)
         return 2
 
     print(_render_choices(state, request.checked_bags), file=stdout)
+    if state.provider_failures:
+        failed_providers = ", ".join(
+            sorted({failure.provider for failure in state.provider_failures})
+        )
+        print(f"Partial flight search; unavailable providers: {failed_providers}", file=stderr)
     if state.explanation_failure is not None:
         print(
             f"AI explanations unavailable: {state.explanation_failure}",
@@ -172,17 +206,35 @@ def _render_choices(state: FlightDecisionState, checked_bags: int | None) -> str
             if connection_label in analysis.connection_labels
         ]
         choice_lines = [
-                "",
-                f"Choice {index}",
-                f"  Roles: {', '.join(roles) if roles else 'None'}",
-                "  Apparent total"
-                f" for {checked_bags} checked bags: "
-                f"{_format_price(analysis.total_price_for_requested_bags, offer.currency)}",
-                f"  Duration: {_format_duration(analysis.total_duration_minutes)}",
-                f"  Stops: {analysis.stops}",
-                f"  Connection labels: {', '.join(labels) if labels else 'None'}",
-                f"  Provider: {offer.provider}",
+            "",
+            f"Choice {index}",
+            f"  Roles: {', '.join(roles) if roles else 'None'}",
+            "  Apparent total"
+            f" for {checked_bags} checked bags: "
+            f"{_format_price(analysis.total_price_for_requested_bags, offer.currency)}",
+            f"  Duration: {_format_duration(analysis.total_duration_minutes)}",
+            f"  Stops: {analysis.stops}",
+            f"  Connection labels: {', '.join(labels) if labels else 'None'}",
+            f"  Provider: {offer.provider}",
         ]
+        for segment_index, segment in enumerate(offer.segments, start=1):
+            carrier = segment.marketing_carrier
+            if segment.operating_carrier and segment.operating_carrier != carrier:
+                carrier += f" (operated by {segment.operating_carrier})"
+            choice_lines.extend(
+                [
+                    f"  Segment {segment_index}: {carrier} {segment.flight_number}",
+                    f"    Depart: {segment.origin} {_format_local_time(segment.departure_at)}",
+                    f"    Arrive: {segment.destination} {_format_local_time(segment.arrival_at)}",
+                ]
+            )
+            if segment_index < len(offer.segments):
+                next_segment = offer.segments[segment_index]
+                layover = next_segment.departure_at - segment.arrival_at
+                connection = f"    Layover: {_format_duration(int(layover.total_seconds() // 60))}"
+                if segment.destination != next_segment.origin:
+                    connection += f"; airport change {segment.destination} → {next_segment.origin}"
+                choice_lines.append(connection)
         explanation = explanations.get(assignment.offer_id)
         if explanation is not None:
             choice_lines.extend(
@@ -207,3 +259,9 @@ def _format_price(amount: int | None, currency: str) -> str:
 def _format_duration(total_minutes: int) -> str:
     hours, minutes = divmod(total_minutes, 60)
     return f"{hours}h {minutes}m"
+
+
+def _format_local_time(value) -> str:
+    """Keep each provider's local wall-clock time and UTC offset visible."""
+
+    return value.strftime("%Y-%m-%d %H:%M %z")

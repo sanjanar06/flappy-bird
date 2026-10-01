@@ -73,6 +73,10 @@ def test_cli_runs_fixture_graph_and_renders_normalized_choices() -> None:
     assert "$1,487.00 USD" in rendered
     assert "Protection unknown" in rendered
     assert "Self-transfer" in rendered
+    assert "Segment 1:" in rendered
+    assert "Depart: ORD 2026-11-10" in rendered
+    assert "Arrive: COK 2026-11-12" in rendered
+    assert "Layover:" in rendered
 
 
 def test_cli_returns_safe_error_for_provider_failure() -> None:
